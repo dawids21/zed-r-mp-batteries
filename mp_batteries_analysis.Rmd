@@ -270,3 +270,99 @@ Na podstawie przeprowadzonej analizy rozkładów zmiennych można wyciągnąć n
      asymetrię ich rozkładów.
    - Duże wartości odchylenia standardowego dla zmiennych energetycznych sugerują znaczące 
      zróżnicowanie właściwości badanych materiałów.
+
+## Analiza korelacji
+
+### Macierz korelacji
+
+W tej części przeprowadzimy analizę korelacji między zmiennymi numerycznymi w naszym zbiorze danych. 
+Pozwoli to na identyfikację istotnych zależności między różnymi właściwościami materiałów bateryjnych.
+
+```{r correlation_heatmap}
+correlation_matrix <- batteries_data_tbl %>%
+  select(numeric_vars) %>%
+  cor()
+
+correlation_long <- correlation_matrix %>%
+  as.data.frame() %>%
+  mutate(variable1 = colnames(correlation_matrix)) %>%
+  pivot_longer(-variable1,
+    names_to = "variable2",
+    values_to = "correlation"
+  )
+
+ggplot(
+  correlation_long,
+  aes(x = variable1, y = variable2, fill = correlation)
+) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red",
+    midpoint = 0, limits = c(-1, 1)
+  ) +
+  geom_text(aes(label = sprintf("%.2f", correlation)), size = 3) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank()
+  ) +
+  labs(fill = "Korelacja")
+```
+
+### Najsilniejsze korelacje
+
+W poniższej tabeli przedstawiono 10 najsilniejszych korelacji między zmiennymi w zbiorze danych, 
+uporządkowanych według wartości bezwzględnej współczynnika korelacji. Pozwala to na szybką 
+identyfikację najistotniejszych zależności między właściwościami materiałów bateryjnych.
+
+```{r key_correlations}
+top_correlations <- correlation_long %>%
+  filter(variable1 < variable2) %>% # Only keep one combination of each pair
+  arrange(desc(abs(correlation))) %>%
+  head(10)
+
+knitr::kable(
+  top_correlations %>%
+    mutate(correlation = round(correlation, 3)) %>%
+    rename(
+      "Zmienna 1" = variable1,
+      "Zmienna 2" = variable2,
+      "Współczynnik korelacji" = correlation
+    ),
+  caption = "10 najsilniejszych korelacji między zmiennymi"
+)
+```
+
+### Szczegółowa analiza najsilniejszych korelacji
+
+Poniżej przedstawiono wykresy rozrzutu dla trzech najsilniejszych korelacji między zmiennymi. 
+Wykresy te pozwalają na dokładniejszą analizę charakteru zależności między wybranymi parami zmiennych.
+
+```{r detailed_correlation_plots}
+top_3_correlations <- top_correlations %>%
+  head(3)
+
+create_scatter_plot <- function(data, var1, var2) {
+  ggplot(data, aes(x = .data[[var1]], y = .data[[var2]])) +
+    geom_point(alpha = 0.5, color = "darkblue") +
+    geom_smooth(method = "lm", color = "red") +
+    theme_minimal() +
+    labs(
+      title = paste("Korelacja:", var1, "vs", var2),
+      x = var1,
+      y = var2
+    )
+}
+
+for (i in 1:3) {
+  print(create_scatter_plot(
+    batteries_data_tbl,
+    top_3_correlations$variable1[i],
+    top_3_correlations$variable2[i]
+  ))
+}
+```
+
+### Najsilniejsze zależności
+- Najwyższą korelację dodatnią zaobserwowano między pojemnością a energią (zarówno dla miar grawimetrycznych, jak i wolumetrycznych)
+- Silna korelacja występuje również między stabilnością materiału w stanie naładowanym i rozładowanym
