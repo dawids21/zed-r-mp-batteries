@@ -10,11 +10,13 @@ output:
 
 ```{r setup, include=FALSE}
 # Ustawienia podstawowe
-knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 
 # Wczytanie potrzebnych bibliotek
 library(dplyr) # do manipulacji danymi
 library(ggplot2) # do tworzenia wykresów
+library(gridExtra) # do łączenia wykresów
+library(tidyr) # do manipulacji danymi
 
 # Ustawienie ziarna losowości dla powtarzalności wyników
 set.seed(123)
@@ -36,20 +38,12 @@ batteries_raw_tbl <- as_tibble(batteries_raw_data)
 
 ### Struktura danych
 ```{r structure}
-dims <- dim(batteries_raw_tbl)
-print(paste("Number of rows:", dims[1]))
-print(paste("Number of columns:", dims[2]))
 str(batteries_raw_tbl)
 ```
 
 ### Pierwsze wiersze zbioru danych
 ```{r head}
 head(batteries_raw_tbl)
-```
-
-### Podstawowe statystyki
-```{r summary}
-summary(batteries_raw_tbl)
 ```
 
 ### Analiza jakości danych
@@ -86,13 +80,6 @@ if (duplicates_count > 0) {
 ```
 
 ### Proces czyszczenia danych
-
-Na podstawie analizy jakości danych przeprowadzimy następujące kroki czyszczenia:
-
-1. Konwersja nazw kolumn na snake_case
-2. Upewnienie się, że wszystkie wartości w kolumnach numerycznych są liczbami
-3. Utworzenie czystego zbioru danych
-
 ```{r data_cleaning}
 # Tworzenie czystego zbioru danych
 batteries_data_tbl <- batteries_raw_tbl %>%
@@ -145,11 +132,141 @@ Poniżej przedstawiono opis wszystkich zmiennych w wyczyszczonym zbiorze danych:
 - **steps** - Liczba odrębnych kroków napięcia od pełnego naładowania do rozładowania, oparta na stabilnych stanach pośrednich
 - **max_voltage_step** [V] - Maksymalna bezwzględna różnica między sąsiednimi krokami napięcia
 
-#### Proces czyszczenia danych
-W ramach przygotowania danych wykonano następujące kroki:
+## Analiza rozkładów zmiennych
 
-1. Sprawdzono występowanie brakujących wartości (brak)
-2. Sprawdzono występowanie duplikatów (brak)
-3. Przekonwertowano nazwy kolumn na format snake_case
-4. Upewniono się, że wszystkie zmienne numeryczne mają odpowiedni typ danych
-5. Zapisano wyczyszczony zbiór danych do pliku 'mp_batteries_clean.csv'
+### Rozkłady zmiennych numerycznych
+
+W tej sekcji przedstawiono rozkłady wszystkich zmiennych numerycznych w naszym zbiorze danych. 
+Dla każdej zmiennej wygenerowano histogram, co pozwala na wizualną ocenę charakteru rozkładu. 
+Wykresy zostały ułożone w siatce po dwa w rzędzie dla lepszej czytelności. 
+Zastosowano spójną stylistykę z jasnoniebieskimi histogramami.
+
+```{r numeric_distributions, fig.height=4, fig.width=10}
+numeric_vars <- c(
+  "max_delta_volume", "average_voltage", "gravimetric_capacity",
+  "volumetric_capacity", "gravimetric_energy", "volumetric_energy",
+  "atomic_fraction_charge", "atomic_fraction_discharge",
+  "stability_charge", "stability_discharge",
+  "steps", "max_voltage_step"
+)
+
+create_distribution_plot <- function(data, var_name) {
+  ggplot(data, aes(x = .data[[var_name]])) +
+    geom_histogram(
+      fill = "lightblue",
+      color = "black",
+      alpha = 0.7
+    ) +
+    labs(x = var_name, y = "Count")
+}
+
+plots_list <- lapply(numeric_vars, function(var) {
+  create_distribution_plot(batteries_data_tbl, var)
+})
+
+for (i in seq(1, length(plots_list), by = 2)) {
+  if (i == length(plots_list)) {
+    print(plots_list[[i]])
+  } else {
+    grid.arrange(plots_list[[i]], plots_list[[i + 1]], ncol = 2)
+  }
+}
+```
+
+### Analiza zmiennych kategorycznych
+
+#### Rozkład jonów roboczych (working ion)
+
+W tej części analizujemy częstość występowania poszczególnych jonów roboczych w badanych materiałach 
+bateryjnych. Wykres słupkowy przedstawia liczbę materiałów wykorzystujących poszczególne jony jako 
+nośniki ładunku.
+
+```{r categorical_working_ion, fig.height=4, fig.width=10}
+working_ion_plot <- batteries_data_tbl %>%
+  count(working_ion, sort = TRUE) %>%
+  ggplot(aes(x = reorder(working_ion, n), y = n)) +
+  geom_bar(stat = "identity", fill = "lightblue", color = "black", alpha = 0.7) +
+  coord_flip() +
+  labs(x = "Jon roboczy", y = "Liczba materiałów") +
+  theme_minimal()
+
+print(working_ion_plot)
+```
+
+#### Porównanie wzorów chemicznych w stanie naładowanym i rozładowanym
+
+Poniższa analiza przedstawia, jak często występują różne kombinacje wzorów chemicznych w stanie 
+naładowanym i rozładowanym. Ze względu na dużą liczbę unikalnych kombinacji, przedstawiono tylko 
+najczęściej występujące przypadki.
+
+```{r formula_comparison, fig.height=4, fig.width=10}
+formula_comparison_plot <- batteries_data_tbl %>%
+  count(formula_charge, formula_discharge, sort = TRUE) %>%
+  head(10) %>%
+  mutate(
+    pair_label = paste(formula_charge, "-", formula_discharge),
+  ) %>%
+  ggplot(aes(x = reorder(pair_label, n), y = n)) +
+  geom_bar(stat = "identity", fill = "lightblue", color = "black", alpha = 0.7) +
+  coord_flip() +
+  labs(
+    x = "Para wzorów (naładowany - rozładowany)",
+    y = "Liczba wystąpień"
+  ) +
+  theme_minimal()
+
+print(formula_comparison_plot)
+```
+
+### Podsumowanie statystyczne
+
+W tej części przedstawiono podstawowe statystyki opisowe dla wszystkich zmiennych numerycznych w zbiorze 
+danych. Dla każdej zmiennej obliczono wartości centralne (średnia, mediana), miary rozproszenia 
+(odchylenie standardowe, rozstęp) oraz kwartyle.
+
+```{r statistical_summary}
+batteries_data_tbl %>%
+  select(numeric_vars) %>%
+  summarise(across(everything(), list(
+    min = ~ min(.),
+    max = ~ max(.),
+    q1 = ~ quantile(., 0.25),
+    median = ~ median(.),
+    mean = ~ mean(.),
+    q3 = ~ quantile(., 0.75),
+    sd = ~ sd(.)
+  ))) %>%
+  pivot_longer(everything(),
+    names_to = c("variable", "statistic"),
+    names_sep = "_(?=[^_]+$)"
+  ) %>%
+  pivot_wider(names_from = statistic, values_from = value) %>%
+  knitr::kable(
+    caption = "Statystyki opisowe dla zmiennych numerycznych",
+    digits = 3
+  )
+```
+
+### Kluczowe wnioski
+
+Na podstawie przeprowadzonej analizy rozkładów zmiennych można wyciągnąć następujące wnioski:
+
+1. **Rozkłady zmiennych numerycznych**
+   - Większość zmiennych energetycznych (gravimetric_energy, volumetric_energy, gravimetric_capacity)
+     wykazuje rozkład prawoskośny, co sugeruje występowanie materiałów o nietypowo wysokich wartościach
+     energetycznych.
+   - Zmienna max_delta_volume charakteryzuje się dużą koncentracją wartości w dolnym zakresie, 
+     co wskazuje, że większość badanych materiałów cechuje się relatywnie małymi zmianami objętości 
+     podczas cyklu ładowania/rozładowania.
+
+2. **Analiza zmiennych kategorycznych**
+   - Dominującym jonem roboczym w badanych materiałach jest Li (lit), co potwierdza jego kluczową rolę 
+     w technologii baterii.
+   - Analiza par wzorów chemicznych wskazuje na występowanie charakterystycznych wzorców transformacji 
+     podczas procesów ładowania i rozładowania.
+
+3. **Charakterystyka statystyczna**
+   - Obserwujemy znaczące różnice między średnią a medianą dla zmiennych energetycznych, co potwierdza 
+     asymetrię ich rozkładów.
+   - Duże wartości odchylenia standardowego dla zmiennych energetycznych sugerują znaczące 
+     zróżnicowanie właściwości badanych materiałów.
