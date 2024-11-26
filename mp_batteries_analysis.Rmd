@@ -6,20 +6,20 @@ output:
   html_document:
     toc: true
     toc_float: true
+    code_folding: hide
 ---
 
 ```{r setup, include=FALSE}
-# Ustawienia podstawowe
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+set.seed(123)
+```
 
-# Wczytanie potrzebnych bibliotek
+```{r libraries, class.source = "fold-show"}
 library(dplyr) # do manipulacji danymi
 library(ggplot2) # do tworzenia wykresów
 library(gridExtra) # do łączenia wykresów
 library(tidyr) # do manipulacji danymi
-
-# Ustawienie ziarna losowości dla powtarzalności wyników
-set.seed(123)
+library(plotly) # do interaktywnych wykresów
 ```
 
 ## Wstęp
@@ -136,12 +136,12 @@ Poniżej przedstawiono opis wszystkich zmiennych w wyczyszczonym zbiorze danych:
 
 ### Rozkłady zmiennych numerycznych
 
-W tej sekcji przedstawiono rozkłady wszystkich zmiennych numerycznych w naszym zbiorze danych. 
-Dla każdej zmiennej wygenerowano histogram, co pozwala na wizualną ocenę charakteru rozkładu. 
-Wykresy zostały ułożone w siatce po dwa w rzędzie dla lepszej czytelności. 
-Zastosowano spójną stylistykę z jasnoniebieskimi histogramami.
+W tej sekcji przedstawiono interaktywny wykres rozkładów wszystkich zmiennych numerycznych w naszym 
+zbiorze danych. Wykres umożliwia wybór zmiennej z rozwijanej listy, co pozwala na szczegółową analizę 
+rozkładu każdej z nich. Zastosowano histogram z możliwością powiększania i przesuwania dla lepszej 
+wizualizacji szczegółów rozkładu.
 
-```{r numeric_distributions, fig.height=4, fig.width=10}
+```{r interactive_distributions, fig.height=6, fig.width=10}
 numeric_vars <- c(
   "max_delta_volume", "average_voltage", "gravimetric_capacity",
   "volumetric_capacity", "gravimetric_energy", "volumetric_energy",
@@ -149,28 +149,61 @@ numeric_vars <- c(
   "stability_charge", "stability_discharge",
   "steps", "max_voltage_step"
 )
+plot_data <- batteries_data_tbl %>%
+  select(numeric_vars)
 
-create_distribution_plot <- function(data, var_name) {
-  ggplot(data, aes(x = .data[[var_name]])) +
-    geom_histogram(
-      fill = "lightblue",
+plot_ly(
+  x = plot_data$volumetric_capacity,
+  type = "histogram",
+  name = "volumetric_capacity",
+  nbinsx = ceiling(sqrt(nrow(plot_data))),
+  marker = list(
+    color = "lightblue",
+    line = list(
       color = "black",
-      alpha = 0.7
-    ) +
-    labs(x = var_name, y = "Count")
-}
-
-plots_list <- lapply(numeric_vars, function(var) {
-  create_distribution_plot(batteries_data_tbl, var)
-})
-
-for (i in seq(1, length(plots_list), by = 2)) {
-  if (i == length(plots_list)) {
-    print(plots_list[[i]])
-  } else {
-    grid.arrange(plots_list[[i]], plots_list[[i + 1]], ncol = 2)
-  }
-}
+      width = 1
+    ),
+    opacity = 0.7
+  ),
+  hovertemplate = paste(
+    "Wartość: %{x}<br>",
+    "Liczba obserwacji: %{y}<br>",
+    "<extra></extra>"
+  )
+) %>%
+  layout(
+    updatemenus = list(
+      list(
+        type = "dropdown",
+        y = 0.9,
+        x = 0.9,
+        buttons = lapply(numeric_vars, function(var) {
+          list(
+            method = "restyle",
+            args = list(
+              list(
+                x = list(plot_data[[var]]),
+                name = var
+              )
+            ),
+            label = var
+          )
+        })
+      )
+    ),
+    xaxis = list(title = "Wartość"),
+    yaxis = list(title = "Liczba obserwacji"),
+    title = c(
+      text = "Rozkład zmiennych numerycznych"
+    ),
+    margin = c(
+      t = 100,
+      b = 50,
+      l = 50,
+      r = 50
+    ),
+    showlegend = FALSE
+  )
 ```
 
 ### Analiza zmiennych kategorycznych
@@ -366,3 +399,109 @@ for (i in 1:3) {
 ### Najsilniejsze zależności
 - Najwyższą korelację dodatnią zaobserwowano między pojemnością a energią (zarówno dla miar grawimetrycznych, jak i wolumetrycznych)
 - Silna korelacja występuje również między stabilnością materiału w stanie naładowanym i rozładowanym
+
+## Interaktywna analiza wydajności jonów roboczych
+W tej sekcji przedstawiono interaktywną analizę porównawczą różnych jonów roboczych wykorzystywanych w 
+materiałach bateryjnych. Wykres radarowy umożliwia porównanie czterech kluczowych charakterystyk:
+
+- **Średnie napięcie (avg_voltage)** - wyższe wartości oznaczają większą różnicę potencjałów, co 
+  przekłada się na wyższą gęstość energii
+- **Gęstość energii (energy_density)** - określa ilość energii, jaką można zmagazynować na jednostkę 
+  masy materiału
+- **Wskaźnik stabilności (stability_score)** - średnia stabilność materiału w stanie naładowanym i 
+  rozładowanym; wyższe wartości wskazują na lepszą trwałość
+- **Zmiana objętości (volume_change)** - określa zmianę objętości materiału podczas cyklu 
+  ładowania/rozładowania; mniejsze wartości są korzystniejsze
+
+Wykres jest interaktywny - można włączać i wyłączać poszczególne jony za pomocą legendy, co ułatwia 
+porównanie wybranych par lub grup jonów.
+
+```{r interactive_ion_performance}
+ion_performance <- batteries_data_tbl %>%
+  group_by(working_ion) %>%
+  filter(n() > 5) %>%
+  summarise(
+    avg_voltage = mean(average_voltage),
+    energy_density = mean(gravimetric_energy),
+    stability_score = mean((stability_charge + stability_discharge) / 2),
+    volume_change = mean(max_delta_volume)
+  )
+
+radar_data <- ion_performance %>%
+  mutate(across(-working_ion, ~ scale(.) %>% as.vector())) %>%
+  pivot_longer(-working_ion, names_to = "metric", values_to = "value") %>%
+  group_by(working_ion) %>%
+  group_modify(~ bind_rows(.x, .x[1, ]))
+
+radar_plot <- plot_ly(
+  type = "scatterpolar",
+  mode = "lines+markers"
+)
+
+for (ion in unique(radar_data$working_ion)) {
+  ion_data <- radar_data %>% filter(working_ion == ion)
+
+  radar_plot <- radar_plot %>%
+    add_trace(
+      r = ion_data$value,
+      theta = ion_data$metric,
+      name = ion,
+      fill = "toself",
+      visible = if (ion == "Li") TRUE else "legendonly",
+      hoverinfo = "text",
+      text = paste0(
+        "Jon: ", ion, "<br>",
+        "Metryka: ", ion_data$metric, "<br>",
+        "Wartość: ", round(ion_data$value, 2)
+      )
+    )
+}
+
+radar_plot %>%
+  layout(
+    title = c(
+      text = "Porównanie charakterystyk różnych jonów roboczych"
+    ),
+    margin = c(
+      t = 100,
+      b = 50,
+      l = 50,
+      r = 50
+    ),
+    polar = list(
+      radialaxis = list(
+        visible = TRUE,
+        range = c(min(radar_data$value), max(radar_data$value)),
+        showticklabels = FALSE,
+        gridcolor = "lightgray"
+      )
+    ),
+    showlegend = TRUE
+  )
+```
+
+#### Wnioski z analizy porównawczej jonów:
+
+1. **Jon litu (Li)**
+   - Wykazuje zrównoważone właściwości we wszystkich kategoriach
+   - Charakteryzuje się wysoką gęstością energii
+   - Oferuje korzystny kompromis między stabilnością a zmianą objętości
+
+2. **Jon sodu (Na)**
+   - Cechuje się niższą gęstością energii w porównaniu do litu
+   - Wykazuje większe zmiany objętości podczas cyklu pracy
+   - Może stanowić tańszą alternatywę dla litu w zastosowaniach stacjonarnych
+
+3. **Jon magnezu (Mg)**
+   - Charakteryzuje się niższym napięciem roboczym
+   - Wykazuje dobrą stabilność materiału
+   - Ma stosunkowo wysoką zmianę objętości podczas cyklu pracy
+   - Oferuje umiarkowaną gęstość energii
+
+4. **Pozostałe jony**
+   - Wykazują zróżnicowane właściwości
+   - Mogą znaleźć zastosowanie w specjalistycznych aplikacjach
+   - Często oferują kompromis między różnymi parametrami
+
+Ta analiza porównawcza pomaga w identyfikacji optymalnych jonów roboczych dla konkretnych zastosowań, 
+biorąc pod uwagę różne wymagania dotyczące wydajności, stabilności i charakterystyki pracy.
