@@ -1,0 +1,604 @@
+---
+title: "Analiza materiałów do baterii - Materials Project"
+author: "Dawid Stasiak"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+set.seed(123)
+```
+
+## Podsumowanie wykonawcze
+
+Niniejszy raport przedstawia kompleksową analizę danych dotyczących materiałów wykorzystywanych w technologii baterii, pochodzących z bazy Materials Project. Analiza objęła różnych materiałów, badając ich właściwości elektrochemiczne, strukturalne i energetyczne.
+
+### Kluczowe wnioski
+1. **Analiza rozkładów zmiennych**
+  - Dominującym jonem roboczym jest lit (Li), występujący w większości badanych materiałów
+  - Występują powtarzające się wzorce przejścia między stanami naładowania i rozładowania
+  - Materiały w stanie rozładowanym są bardziej złożone chemicznie
+  - Większość zmiennych energetycznych (gravimetric_energy, volumetric_energy, gravimetric_capacity) wykazuje rozkład prawoskośny
+2. **Analiza korelacji**
+  - Silna korelacja między:
+    - ilością energii na jednostkę masy i na jednostkę objętości (r = 0.928)
+    - gęstością energii na jednostkę masy i na jednostkę objętości (r = 0.858)
+    - wskaźnikiem stabilności w stanie naładowanym i rozładowanym (r = 0.803)
+3. **Analiza porównawcza jonów roboczych**
+- **Jon litu (Li)**
+  - Wykazuje najwyższe wartości średniego napięcia
+  - Charakteryzuje się najlepszą gęstością energii
+  - Posiada umiarkowany wskaźnik stabilności
+  - Wykazuje średnią zmianę objętości
+- **Jon wapnia (Ca)**
+  - Wykazuje wysokie średnie napięcie, zbliżone do litu
+  - Posiada dobrą gęstość energii, choć niższą niż lit
+  - Charakteryzuje się niskim wskaźnikiem stabilności
+  - Ma stosunkowo wysoką zmianę objętości
+- **Jon magnezu (Mg)**
+  - Wykazuje niższe średnie napięcie w porównaniu do Li i Ca
+  - Osiąga umiarkowaną gęstość energii
+  - Posiada najwyższy wskaźnik stabilności spośród analizowanych jonów
+  - Charakteryzuje się bardzo wysoką zmianą objętości, co jest jego największą wadą
+4. **Analiza predykcyjna**
+   - Stworzono model korzystający z algorytmu Random Forest do przewidywania stabilności materiału w stanie naładowanym
+   - Najważniejszymi predyktorami okazały się:
+     - średnie napięcie
+     - gęstość energii
+     - zmiana objętości
+
+```{r libraries, class.source = "fold-show"}
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(tidyr)
+library(plotly)
+library(caret)
+```
+
+## Wstęp
+
+Niniejszy raport przedstawia analizę bazy danych materiałów wykorzystywanych w tworzeniu baterii, pochodzących z projektu Materials Project. Materials Project to inicjatywa naukowa Departamentu Energii USA, której celem jest dostarczanie otwartych danych i narzędzi do analizy materiałów.
+
+## Wczytanie i przygotowanie danych
+
+Wczytanie surowych danych z pliku CSV i wstępna analiza ich struktury.
+
+```{r load_data}
+batteries_raw_data <- read.csv("mp_batteries.csv")
+batteries_raw_tbl <- as_tibble(batteries_raw_data)
+```
+
+### Struktura danych
+```{r structure}
+str(batteries_raw_tbl)
+```
+
+### Pierwsze wiersze zbioru danych
+```{r head}
+head(batteries_raw_tbl)
+```
+
+### Analiza jakości danych
+
+Sprawdzenie jakości danych pod kątem brakujących wartości, duplikatów oraz potencjalnych nieprawidłowości w danych.
+
+```{r missing_values}
+missing_values <- colSums(is.na(batteries_raw_tbl))
+missing_values_tbl <- tibble(
+  column = names(missing_values),
+  missing_count = missing_values
+) %>%
+  filter(missing_count > 0)
+
+if (nrow(missing_values_tbl) > 0) {
+  print("Kolumny z brakujacymi wartosciami:")
+  print(missing_values_tbl)
+} else {
+  print("Brak brakujacych wartosci w zbiorze danych")
+}
+```
+
+```{r duplicates}
+duplicates_count <- sum(duplicated(batteries_raw_tbl))
+print(paste("Liczba zduplikowanych wierszy:", duplicates_count))
+```
+
+### Proces czyszczenia danych
+```{r data_cleaning}
+batteries_data_tbl <- batteries_raw_tbl %>%
+  rename_all(tolower) %>%
+  rename_all(~ gsub("\\.", "_", .)) %>%
+  mutate(
+    max_delta_volume = as.numeric(max_delta_volume),
+    average_voltage = as.numeric(average_voltage),
+    gravimetric_capacity = as.numeric(gravimetric_capacity),
+    volumetric_capacity = as.numeric(volumetric_capacity),
+    gravimetric_energy = as.numeric(gravimetric_energy),
+    volumetric_energy = as.numeric(volumetric_energy),
+    atomic_fraction_charge = as.numeric(atomic_fraction_charge),
+    atomic_fraction_discharge = as.numeric(atomic_fraction_discharge),
+    stability_charge = as.numeric(stability_charge),
+    stability_discharge = as.numeric(stability_discharge),
+    steps = as.integer(steps),
+    max_voltage_step = as.numeric(max_voltage_step)
+  )
+
+str(batteries_data_tbl)
+```
+
+```{r save_clean_data}
+write.csv(batteries_data_tbl, "mp_batteries_clean.csv", row.names = FALSE)
+```
+
+### Dokumentacja zbioru danych
+
+Poniżej przedstawiono opis wszystkich zmiennych w wyczyszczonym zbiorze danych:
+
+- **battery_id** - Identyfikator baterii
+- **battery_formula** - Wzór chemiczny materiału baterii
+- **working_ion** - Główny jon, który odpowiada za transport ładunku w baterii
+- **formula_charge** - Wzór chemiczny materiału baterii w stanie naładowanym
+- **formula_discharge** - Wzór chemiczny materiału baterii w stanie rozładowanym
+- **max_delta_volume** [%] - Zmiana objętości w % dla danego kroku napięcia za pomocą wzoru: max(charge, discharge)/min(charge, discharge) -1
+- **average_voltage** [V] - Średnie napięcie dla poszczególnego kroku napięcia
+- **gravimetric_capacity** [mAh/g] - Pojemność grawimetryczna, czyli ilość energii na jednostkę masy
+- **volumetric_capacity** [mAh/cm³] - Pojemność wolumetryczna, czyli ilość energii na jednostkę objętości
+- **gravimetric_energy** [Wh/kg] - Gęstość energii w odniesieniu do masy baterii
+- **volumetric_energy** [Wh/L] - Gęstość energii w odniesieniu do objętości baterii
+- **atomic_fraction_charge** - Udział atomowy składników w stanie naładowanym
+- **atomic_fraction_discharge** - Udział atomowy składników w stanie rozładowanym
+- **stability_charge** - Wskaźnik stabilności materiału w stanie naładowanym
+- **stability_discharge** - Wskaźnik stabilności materiału w stanie rozładowanym
+- **steps** - Liczba odrębnych kroków napięcia od pełnego naładowania do rozładowania, oparta na stabilnych stanach pośrednich
+- **max_voltage_step** [V] - Maksymalna bezwzględna różnica między sąsiednimi krokami napięcia
+
+## Analiza rozkładów zmiennych
+
+### Rozkłady zmiennych numerycznych
+
+W tej sekcji przedstawiono interaktywny wykres rozkładów wszystkich zmiennych numerycznych w naszym 
+zbiorze danych. Wykres umożliwia wybór zmiennej z rozwijanej listy, co pozwala na szczegółową analizę 
+rozkładu każdej z nich. Zastosowano histogram z możliwością powiększania i przesuwania dla lepszej 
+wizualizacji szczegółów rozkładu.
+
+```{r interactive_distributions}
+numeric_vars <- c(
+  "max_delta_volume", "average_voltage", "gravimetric_capacity",
+  "volumetric_capacity", "gravimetric_energy", "volumetric_energy",
+  "atomic_fraction_charge", "atomic_fraction_discharge",
+  "stability_charge", "stability_discharge",
+  "steps", "max_voltage_step"
+)
+plot_data <- batteries_data_tbl %>%
+  select(numeric_vars)
+
+plot_ly(
+  x = plot_data$volumetric_capacity,
+  type = "histogram",
+  marker = list(
+    color = "lightblue",
+    line = list(
+      color = "black",
+      width = 1
+    )
+  ),
+  hovertemplate = paste(
+    "Wartosc: %{x}<br>",
+    "Liczba obserwacji: %{y}<br>",
+    "<extra></extra>"
+  )
+) %>%
+  layout(
+    updatemenus = list(
+      list(
+        type = "dropdown",
+        y = 0.9,
+        x = 0.9,
+        buttons = lapply(numeric_vars, function(var) {
+          list(
+            method = "restyle",
+            args = list(
+              list(
+                x = list(plot_data[[var]]),
+                name = var
+              )
+            ),
+            label = var
+          )
+        })
+      )
+    ),
+    xaxis = list(title = "Wartosc"),
+    yaxis = list(title = "Liczba obserwacji"),
+    title = c(
+      text = "Rozklad zmiennych numerycznych"
+    ),
+    margin = c(
+      t = 100,
+      b = 50,
+      l = 50,
+      r = 50
+    ),
+    showlegend = FALSE
+  )
+```
+
+### Analiza zmiennych kategorycznych
+
+#### Rozkład jonów roboczych (working ion)
+
+W tej części analizujemy częstość występowania poszczególnych jonów roboczych w badanych materiałach 
+bateryjnych. Wykres słupkowy przedstawia liczbę materiałów wykorzystujących poszczególne jony jako 
+nośniki ładunku.
+
+```{r categorical_working_ion}
+batteries_data_tbl %>%
+  count(working_ion, sort = TRUE) %>%
+  ggplot(aes(x = reorder(working_ion, n), y = n)) +
+  geom_bar(stat = "identity", fill = "lightblue", color = "black") +
+  coord_flip() +
+  labs(x = "Jon roboczy", y = "Liczba materialow")
+```
+
+Dominującym jonem roboczym jest lit (Li), występujący w większości badanych materiałów
+bateryjnych. Pozostałe jony, takie jak Na (sód), Mg (magnez) czy Ca (wapń), stanowią mniejszą część.
+
+#### Porównanie wzorów chemicznych w stanie naładowanym i rozładowanym
+
+Poniższa analiza przedstawia, jak często występują różne kombinacje wzorów chemicznych w stanie 
+naładowanym i rozładowanym, co pozwoli nam zidentyfikować dominujące wzorce w projektowaniu materiałów bateryjnych.
+Ze względu na dużą liczbę unikalnych kombinacji, przedstawiono tylko najczęściej występujące przypadki.
+
+```{r formula_comparison}
+batteries_data_tbl %>%
+  count(formula_charge, formula_discharge, sort = TRUE) %>%
+  head(10) %>%
+  mutate(
+    pair_label = paste(formula_charge, "-", formula_discharge),
+  ) %>%
+  ggplot(aes(x = reorder(pair_label, n), y = n)) +
+  geom_bar(stat = "identity", fill = "lightblue", color = "black") +
+  coord_flip() +
+  labs(
+    x = "Para wzorów (naladowany - rozladowany)",
+    y = "Liczba wystapien"
+  )
+```
+
+Występują powtarzające się wzorce przejścia między stanami naładowania i rozładowania.
+Dodatkowo materiały w stanie rozładowanym są bardziej złożone chemicznie.
+
+### Podsumowanie statystyczne
+
+W tej części przedstawiono podstawowe statystyki opisowe dla wszystkich zmiennych numerycznych w zbiorze 
+danych. Dla każdej zmiennej obliczono wartości centralne (średnia, mediana), miary rozproszenia 
+(odchylenie standardowe, rozstęp) oraz kwartyle.
+
+```{r statistical_summary}
+batteries_data_tbl %>%
+  select(numeric_vars) %>%
+  summarise(across(everything(), list(
+    min = ~ min(.),
+    max = ~ max(.),
+    q1 = ~ quantile(., 0.25),
+    median = ~ median(.),
+    mean = ~ mean(.),
+    q3 = ~ quantile(., 0.75),
+    sd = ~ sd(.)
+  ))) %>%
+  pivot_longer(everything(),
+    names_to = c("variable", "statistic"),
+    names_sep = "_(?=[^_]+$)"
+  ) %>%
+  pivot_wider(names_from = statistic, values_from = value) %>%
+  knitr::kable(
+    caption = "Statystyki opisowe dla zmiennych numerycznych",
+    digits = 3
+  )
+```
+
+Większość zmiennych energetycznych (gravimetric_energy, volumetric_energy, gravimetric_capacity) wykazuje rozkład prawoskośny
+
+## Analiza korelacji
+
+### Macierz korelacji
+
+W tej części przeprowadzimy analizę korelacji między zmiennymi numerycznymi w naszym zbiorze danych. 
+Pozwoli to na identyfikację istotnych zależności między różnymi właściwościami materiałów bateryjnych.
+
+```{r correlation_heatmap}
+correlation_matrix <- batteries_data_tbl %>%
+  select(numeric_vars) %>%
+  cor()
+
+correlation_long <- correlation_matrix %>%
+  as.data.frame() %>%
+  mutate(variable1 = colnames(correlation_matrix)) %>%
+  pivot_longer(-variable1,
+    names_to = "variable2",
+    values_to = "correlation"
+  )
+
+ggplot(
+  correlation_long,
+  aes(x = variable1, y = variable2, fill = correlation)
+) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red",
+    midpoint = 0, limits = c(-1, 1)
+  ) +
+  geom_text(aes(label = sprintf("%.2f", correlation)), size = 3) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+  ) +
+  labs(x = "Zmienna 1", y = "Zmienna 2", fill = "Korelacja")
+```
+
+### Najsilniejsze korelacje
+
+W poniższej tabeli przedstawiono 10 najsilniejszych korelacji między zmiennymi w zbiorze danych, 
+uporządkowanych według wartości bezwzględnej współczynnika korelacji. Pozwala to na szybką 
+identyfikację najistotniejszych zależności między właściwościami materiałów bateryjnych.
+
+```{r key_correlations}
+top_correlations <- correlation_long %>%
+  filter(variable1 < variable2) %>%
+  arrange(desc(abs(correlation))) %>%
+  head(10)
+
+knitr::kable(
+  top_correlations %>%
+    mutate(correlation = round(correlation, 3)) %>%
+    rename(
+      "Zmienna 1" = variable1,
+      "Zmienna 2" = variable2,
+      "Korelacja" = correlation
+    ),
+  caption = "10 najsilniejszych korelacji miedzy zmiennymi"
+)
+```
+
+### Szczegółowa analiza najsilniejszych korelacji
+
+Poniżej przedstawiono wykresy rozrzutu dla trzech najsilniejszych korelacji między zmiennymi. 
+Wykresy te pozwalają na dokładniejszą analizę charakteru zależności między wybranymi parami zmiennych.
+
+```{r detailed_correlation_plots}
+top_3_correlations <- top_correlations %>%
+  head(3)
+
+create_scatter_plot <- function(data, var1, var2) {
+  ggplot(data, aes(x = .data[[var1]], y = .data[[var2]])) +
+    geom_point(color = "blue") +
+    geom_smooth(method = "lm", color = "red") +
+    theme_minimal() +
+    labs(
+      title = paste("Korelacja:", var1, "vs", var2),
+      x = var1,
+      y = var2
+    )
+}
+
+for (i in 1:3) {
+  print(create_scatter_plot(
+    batteries_data_tbl,
+    top_3_correlations$variable1[i],
+    top_3_correlations$variable2[i]
+  ))
+}
+```
+
+### Najsilniejsze zależności
+- Najwyższą korelację dodatnią zaobserwowano między pojemnością a energią (zarówno dla miar grawimetrycznych, jak i wolumetrycznych)
+- Silna korelacja występuje również między stabilnością materiału w stanie naładowanym i rozładowanym
+
+## Interaktywna analiza wydajności jonów roboczych
+W tej sekcji przedstawiono interaktywną analizę porównawczą różnych jonów roboczych wykorzystywanych w 
+materiałach bateryjnych. Wykres radarowy umożliwia porównanie czterech kluczowych charakterystyk:
+
+- **Średnie napięcie (avg_voltage)** - wyższe wartości oznaczają większą różnicę potencjałów, co 
+  przekłada się na wyższą gęstość energii
+- **Gęstość energii (energy_density)** - określa ilość energii, jaką można zmagazynować na jednostkę 
+  masy materiału
+- **Wskaźnik stabilności (stability_score)** - średnia stabilność materiału w stanie naładowanym i 
+  rozładowanym; wyższe wartości wskazują na lepszą trwałość
+- **Zmiana objętości (volume_change)** - określa zmianę objętości materiału podczas cyklu 
+  ładowania/rozładowania; mniejsze wartości są korzystniejsze
+
+Wykres jest interaktywny - można włączać i wyłączać poszczególne jony za pomocą legendy, co ułatwia 
+porównanie wybranych par lub grup jonów.
+
+```{r interactive_ion_performance}
+ion_performance <- batteries_data_tbl %>%
+  group_by(working_ion) %>%
+  filter(n() > 5) %>%
+  summarise(
+    avg_voltage = mean(average_voltage),
+    energy_density = mean(gravimetric_energy),
+    stability_score = mean((stability_charge + stability_discharge) / 2),
+    volume_change = mean(max_delta_volume)
+  )
+
+radar_data <- ion_performance %>%
+  mutate(across(-working_ion, ~ scale(.) %>% as.vector())) %>%
+  pivot_longer(-working_ion, names_to = "metric", values_to = "value") %>%
+  group_by(working_ion) %>%
+  group_modify(~ bind_rows(.x, .x[1, ]))
+
+radar_plot <- plot_ly(
+  type = "scatterpolar",
+  mode = "lines+markers"
+)
+
+for (ion in unique(radar_data$working_ion)) {
+  ion_data <- radar_data %>% filter(working_ion == ion)
+
+  radar_plot <- radar_plot %>%
+    add_trace(
+      r = ion_data$value,
+      theta = ion_data$metric,
+      name = ion,
+      fill = "toself",
+      visible = if (ion == "Li") TRUE else "legendonly",
+      hoverinfo = "text",
+      text = paste0(
+        "Jon: ", ion, "<br>",
+        "Metryka: ", ion_data$metric, "<br>",
+        "Wartosc: ", round(ion_data$value, 2)
+      )
+    )
+}
+
+radar_plot %>%
+  layout(
+    title = c(
+      text = "Porownanie charakterystyk roznych jonow roboczych "
+    ),
+    margin = c(
+      t = 100,
+      b = 50,
+      l = 50,
+      r = 50
+    ),
+    polar = list(
+      radialaxis = list(
+        visible = TRUE,
+        range = c(min(radar_data$value), max(radar_data$value)),
+        showticklabels = FALSE
+      )
+    ),
+    showlegend = TRUE
+  )
+```
+
+## Modelowanie predykcyjne
+
+### Przygotowanie danych do modelowania
+W tej części przygotujemy dane do stworzenia modelu predykcyjnego dla stabilności materiału w stanie naładowanym (`stability_charge`). Model ten może być szczególnie użyteczny przy projektowaniu nowych materiałów bateryjnych, pozwalając przewidzieć ich stabilność na podstawie innych właściwości.
+
+Proces przygotowania danych obejmuje:
+
+1. Usunięcie zmiennych identyfikacyjnych (`battery_id`, `battery_formula`)
+2. Usunięcie zmiennej `stability_discharge` ze względu na wysoką korelację ze zmienną przewidywaną
+3. Ekstrakcję cech z wzorów chemicznych (liczba elementów)
+4. Przekształcenie zmiennej kategorycznej `working_ion` na zmienne binarne (dummy variables)
+5. Podział danych na zbiór treningowy (80%) i testowy (20%)
+```{r model_data_prep}
+model_data <- batteries_data_tbl %>%
+  select(-battery_id, -battery_formula, -stability_discharge) %>%
+  mutate(
+    charge_elements_count = stringr::str_count(formula_charge, "[A-Z]"),
+    discharge_elements_count = stringr::str_count(formula_discharge, "[A-Z]"),
+    working_ion = as.factor(working_ion)
+  ) %>%
+  select(-formula_charge, -formula_discharge) %>%
+  fastDummies::dummy_cols("working_ion", remove_selected_columns = TRUE)
+
+train_index <- createDataPartition(
+  model_data$stability_charge,
+  p = 0.8,
+  list = FALSE
+)
+train_data <- model_data[train_index, ]
+test_data <- model_data[-train_index, ]
+
+ggplot() +
+  geom_density(
+    data = train_data,
+    aes(x = stability_charge, fill = "Treningowy"),
+    alpha = 0.7
+  ) +
+  geom_density(
+    data = test_data,
+    aes(x = stability_charge, fill = "Testowy"),
+    alpha = 0.7
+  ) +
+  scale_fill_manual(values = c(
+    "Treningowy" = "lightblue", "Testowy" = "lightgreen"
+  )) +
+  theme_minimal() +
+  labs(
+    title = "Rozklad zmiennej zależnej w zbiorach treningowym i testowym",
+    x = "Wskaznik stabilnosci",
+    y = "Gestosc"
+  )
+```
+
+### Model Random Forest
+W tej części wykorzystamy algorytm Random Forest do przewidywania stabilności materiału w stanie naładowanym. Model wykorzystuje technikę walidacji krzyżowej (5-krotna z 3 powtórzeniami) do oceny swojej skuteczności. Model jest zapisywany po treningu, co pozwala uniknąć ponownego trenowania przy każdej generacji raportu.
+
+```{r model_training}
+model_file <- "model.rds"
+
+if (file.exists(model_file)) {
+  model <- readRDS(model_file)
+} else {
+  train_control <- trainControl(
+    method = "repeatedcv",
+    number = 5,
+    repeats = 3,
+    savePredictions = "final",
+    verboseIter = TRUE
+  )
+
+  model <- train(
+    stability_charge ~ .,
+    data = train_data,
+    method = "rf",
+    trControl = train_control,
+    metric = "RMSE",
+    tuneLength = 5,
+    verbose = TRUE
+  )
+
+  saveRDS(model, model_file)
+}
+
+print(model)
+```
+
+### Ocena modelu i wizualizacja wyników
+Poniżej przedstawiono wyniki modelu wraz z wizualizacjami pokazującymi jego skuteczność:
+
+```{r model_evaluation}
+predictions <- predict(model, test_data)
+
+model_metrics <- postResample(predictions, test_data$stability_charge)
+
+print("Metryki modelu na zbiorze testowym:")
+print(model_metrics)
+
+prediction_plot <- ggplot() +
+  geom_point(
+    aes(x = test_data$stability_charge, y = predictions),
+    alpha = 0.5,
+    color = "blue"
+  ) +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  theme_minimal() +
+  labs(
+    title = "Porownanie wartosci przewidzianych i rzeczywistych",
+    x = "Rzeczywisty wskaznik stabilnosci",
+    y = "Przewidziany wskaznik stabilnosci"
+  )
+
+print(prediction_plot)
+
+importance <- varImp(model)
+importance_plot <- ggplot(importance) +
+  geom_bar(stat = "identity", fill = "lightblue", color = "black") +
+  labs(
+    title = "Waznosc zmiennych w modelu",
+    x = "Zmienne",
+    y = "Wzgledna waznosc [%]"
+  )
+
+print(importance_plot)
+```
